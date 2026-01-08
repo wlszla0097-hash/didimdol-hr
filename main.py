@@ -28,14 +28,16 @@ def get_engine():
     # 4. 구글 시트 연결 반환
     return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
 @st.cache_data(ttl=2)
-def fetch(idx):
+def fetch(sheet_name): 
     try:
-        data = get_engine().get_worksheet(idx).get_all_values()
+        # 숫자가 아니라 'User_List' 같은 이름을 직접 찾습니다.
+        data = get_engine().worksheet(sheet_name).get_all_values()
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
         df.columns = [str(c).strip() for c in df.columns]
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        return pd.DataFrame()
 
 def smart_time_parser(val, current_sec):
     val = str(val).strip().replace(" ", "")
@@ -227,7 +229,7 @@ if st.session_state['user_info'] is None:
             u_id = st.text_input("아이디", key="l_id")
             u_pw = st.text_input("비밀번호", type="password", key="l_pw")
             if st.button("로그인", use_container_width=True, type="primary"):
-                users = fetch(1)
+                users = fetch("User_List")
                 match = users[(users['아이디'].astype(str) == u_id) & (users['비밀번호'].astype(str) == u_pw)]
                 if not match.empty:
                     st.session_state['user_info'] = match.iloc[0].to_dict()
@@ -354,4 +356,5 @@ else:
     elif menu == "📋 나의 기록 확인":
         st.header("📋 나의 근태 기록")
         my_all = recs[(recs.get('아이디','').astype(str) == str(u['아이디']))]
+
         st.dataframe(my_all[['일시', '구분', '비고']], use_container_width=True, hide_index=True)
