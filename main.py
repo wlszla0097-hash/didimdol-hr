@@ -18,7 +18,12 @@ def get_engine():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         
-        # [패치] Secrets 수정 권한 문제 해결
+        # [핵심] Secrets는 수정 불가능하므로 dict()로 사본을 떠서 수정합니다.
+        # 이 코드가 'Secrets does not support item assignment' 에러를 막습니다.
+        if "gcp_service_account" not in st.secrets:
+            st.error("Secrets 설정이 없습니다. Streamlit 대시보드를 확인하세요.")
+            return None
+            
         creds_info = dict(st.secrets["gcp_service_account"])
         
         # Private Key 줄바꿈 강제 보정
@@ -28,6 +33,8 @@ def get_engine():
         credentials = Credentials.from_service_account_info(creds_info, scopes=scope)
         return gspread.authorize(credentials).open_by_key(SPREADSHEET_ID)
     except Exception as e:
+        # 에러를 숨기지 않고 화면에 출력하여 원인을 파악합니다.
+        st.error(f"구글 시트 연결 실패: {e}")
         return None
 
 @st.cache_data(ttl=2)
@@ -35,13 +42,14 @@ def fetch(sheet_name):
     try:
         engine = get_engine()
         if engine is None: return pd.DataFrame()
-        # 시트 이름으로 데이터 호출
+        # 시트 이름으로 데이터 호출 (탭 순서 바뀌어도 안전함)
         data = engine.worksheet(sheet_name).get_all_values()
         if not data or len(data) < 1: return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
+        st.error(f"데이터 읽기 오류 ({sheet_name}): {e}")
         return pd.DataFrame()
 
 # --- 디자인: 로고 ---
@@ -68,8 +76,7 @@ def smart_time_parser(val, current_sec=0):
 def run_approval_system(u, db):
     st.header("📝 전자결재 시스템")
     udf = fetch("User_List")
-    if udf.empty: 
-        st.warning("데이터 로딩 중..."); return
+    if udf.empty: return
 
     mgr_df = udf[(udf['사업자번호'].astype(str) == str(u['사업자번호'])) & (udf['권한'] == 'Manager')]
     mgr_map = {row['아이디']: row['이름'] for _, row in mgr_df.iterrows()}
@@ -128,7 +135,6 @@ def run_approval_system(u, db):
                     st.markdown(doc_body, unsafe_allow_html=True)
                     
                     if st.button("📄 기안서 출력", key=f"prt_{row['결재ID']}"):
-                        # SyntaxError 방지 처리
                         safe_body = doc_body.replace("'", "\\'").replace("\n", "")
                         components.html(f"<script>var pwin = window.open('', '_blank'); pwin.document.write('<html><body>{safe_body}</body></html>'); pwin.document.close(); setTimeout(function(){{ pwin.print(); pwin.close(); }}, 500);</script>", height=0)
                     
@@ -167,15 +173,20 @@ if st.session_state['user_info'] is None:
         with t_l:
             u_id = st.text_input("아이디", key="login_id")
             u_pw = st.text_input("비밀번호", type="password", key="login_pw")
-            # 빨간 로그인 버튼 복구
+            
+            # 빨간 로그인 버튼 및 로그인 로직
             if st.button("로그인", type="primary", use_container_width=True):
                 users = fetch("User_List")
+                
+                # 데이터가 비어있지 않은지 확인 (KeyError 방지)
                 if not users.empty and '아이디' in users.columns:
                     match = users[(users['아이디'].astype(str) == u_id) & (users['비밀번호'].astype(str) == u_pw)]
                     if not match.empty:
                         st.session_state['user_info'] = match.iloc[0].to_dict(); st.rerun()
                     else: st.error("아이디 또는 비밀번호가 틀립니다.")
-                else: st.error("⚠️ 서버 연결 재설정 중... 10초 후 다시 로그인 버튼을 눌러주세요.")
+                else: 
+                    # 에러 발생 시 여기서 멈춤 (사용자에게 원인 알림)
+                    st.error("⚠️ 사용자 데이터를 불러올 수 없습니다. 시트 연결 상태를 확인해주세요.")
         with t_j:
             with st.form("join"):
                 st.write("##### 🏢 디딤돌HR 가입")
