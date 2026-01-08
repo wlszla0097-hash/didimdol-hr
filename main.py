@@ -21,7 +21,6 @@ def get_engine():
         credentials = Credentials.from_service_account_info(creds_info, scopes=scope)
         return gspread.authorize(credentials).open_by_key(SPREADSHEET_ID)
     except Exception as e:
-        st.error(f"구글 시트 연결 실패: {e}")
         return None
 
 @st.cache_data(ttl=2)
@@ -35,8 +34,13 @@ def fetch(sheet_name):
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
-        st.error(f"데이터 읽기 실패 ({sheet_name}): {e}")
         return pd.DataFrame()
+
+def get_base64_img(path):
+    try:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except: return ""
 
 def smart_time_parser(val, current_sec):
     val = str(val).strip().replace(" ", "")
@@ -53,11 +57,12 @@ def smart_time_parser(val, current_sec):
         return f"{val[:5]}:{current_sec:02d}" if len(val) >= 5 else val
     except: return val
 
-# --- [기능] 전자결재 시스템 ---
+# --- 2. 전자결재 시스템 ---
 def run_approval_system(u, db):
     st.header("📝 전자결재 시스템")
     udf = fetch("User_List")
-    if udf.empty: return
+    if udf.empty: 
+        st.error("데이터를 가져올 수 없습니다. 잠시 후 다시 시도해주세요."); return
 
     mgr_df = udf[(udf['사업자번호'].astype(str) == str(u['사업자번호'])) & (udf['권한'] == 'Manager')]
     mgr_map = {row['아이디']: row['이름'] for _, row in mgr_df.iterrows()}
@@ -79,9 +84,8 @@ def run_approval_system(u, db):
                 v_date = st.date_input("휴가 예정일", value=date.today())
                 reason = st.text_area("신청 사유")
                 detail_content = f"일자:{v_date} | 사유:{reason}"
-            else:
-                detail_content = st.text_area("상세 내용")
-            if st.form_submit_button("🚀 기안 확정 및 송신"):
+            else: detail_content = st.text_area("상세 내용")
+            if st.form_submit_button("🚀 기안 확정 및 송신", use_container_width=True):
                 if not mgr_options: st.error("승인권자가 없습니다."); return
                 approvers = [mgr_options[app1]]
                 if app2 != "없음": approvers.append(mgr_options[app2])
@@ -94,75 +98,82 @@ def run_approval_system(u, db):
 
     with t2:
         st.subheader("결재 내역 모니터링")
-        try:
-            df = fetch("결재데이터")
-            if not df.empty:
-                my_biz = df[df['사업자번호'].astype(str) == str(u['사업자번호'])]
-                display_df = my_biz[(my_biz['기안자ID'] == str(u['아이디'])) | (my_biz['결재자ID'].str.contains(str(u['아이디'])))]
-                for _, row in display_df.iterrows():
-                    actual_row = int(row.name) + 2 
-                    approver_ids = row['결재자ID'].split(',')
-                    with st.expander(f"[{row['상태']}] {row['제목']} (기안:{row['이름']})"):
-                        stamp_html = "<div style='display: flex; justify-content: flex-end; margin-bottom: 20px;'>"
-                        for i, aid in enumerate(approver_ids):
-                            name = mgr_map.get(aid, "관리자")
-                            s_text = "대기"
-                            if row['상태'] == "승인": s_text = "승인 완"
-                            elif row['상태'] == "1차 승인" and i == 0: s_text = "승인 완"
-                            stamp_html += f"<div style='border: 1px solid #333; width: 70px; text-align: center; margin-left: -1px; color: black;'><div style='background: #f8f9fa; border-bottom: 1px solid #333; font-size: 10px; padding: 2px;'>{i+1}차 결재</div><div style='padding: 8px 2px; font-weight: bold; font-size: 12px;'>{name}</div><div style='border-top: 1px dotted #ccc; color: #d9534f; font-size: 9px; padding: 2px;'>{s_text}</div></div>"
-                        stamp_html += "</div>"
-                        
-                        doc_body = f"<div style='border: 2px solid #000; padding: 40px; background-color: #fff; color: #000;'><h1 style='text-align: center; text-decoration: underline;'>{row['결재유형']}</h1>{stamp_html}<table style='width: 100%; border-collapse: collapse; border: 1px solid #000;'><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2;'>기안자</td><td style='border: 1px solid #000; padding: 10px;'>{row['이름']}</td></tr><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2;'>제목</td><td style='border: 1px solid #000; padding: 10px;'>{row['제목']}</td></tr><tr><td colspan='2' style='border: 1px solid #000; padding: 30px; height: 200px; vertical-align: top;'>{row['내용'].replace('|', '<br>')}</td></tr></table></div>"
-                        st.markdown(doc_body, unsafe_allow_html=True)
-                        
-                        if st.button("📄 기안서 출력", key=f"prt_{row['결재ID']}"):
-                            # [해결] 특수문자 오류를 방지하기 위해 미리 정리합니다.
-                            clean_body = doc_body.replace("\n", "").replace("'", "\\'")
-                            prt_script = f"<script>var pwin = window.open('', '_blank'); pwin.document.write('<html><body>{clean_body}</body></html>'); pwin.document.close(); setTimeout(function(){{ pwin.print(); pwin.close(); }}, 500);</script>"
-                            components.html(prt_script, height=0)
-                        
-                        uid, stat = str(u['아이디']), row['상태']
-                        can_approve, next_stat = False, "승인"
-                        if uid == approver_ids[0] and stat == "대기":
-                            can_approve = True
-                            if len(approver_ids) > 1: next_stat = "1차 승인"
-                        elif len(approver_ids) > 1 and uid == approver_ids[1] and stat == "1차 승인":
-                            can_approve = True
-                        if can_approve:
-                            if st.button("✅ 승인하기", key=f"ok_{row['결재ID']}"):
-                                db.worksheet("결재데이터").update_cell(actual_row, 8, next_stat)
-                                if next_stat == "승인" and "연차" in row['결재유형']:
-                                    d_match = re.search(r'\d{4}-\d{2}-\d{2}', row['내용'])
-                                    if d_match: db.worksheet("Schedules").append_row([str(u['사업자번호']), d_match.group(), row['이름'], f"[연차] {row['제목']}"])
-                                st.success("승인 완료!"); st.rerun()
-            else: st.info("내역이 없습니다.")
-        except Exception as e: st.error(f"시스템 오류: {e}")
+        df = fetch("결재데이터")
+        if not df.empty:
+            my_biz = df[df['사업자번호'].astype(str) == str(u['사업자번호'])]
+            display_df = my_biz[(my_biz['기안자ID'] == str(u['아이디'])) | (my_biz['결재자ID'].str.contains(str(u['아이디'])))]
+            for _, row in display_df.iterrows():
+                actual_row = int(row.name) + 2 
+                approver_ids = row['결재자ID'].split(',')
+                with st.expander(f"[{row['상태']}] {row['제목']} (기안:{row['이름']})"):
+                    stamp_html = "<div style='display: flex; justify-content: flex-end; margin-bottom: 20px;'>"
+                    for i, aid in enumerate(approver_ids):
+                        name = mgr_map.get(aid, "관리자")
+                        s_text = "대기"
+                        if row['상태'] == "승인": s_text = "승인 완"
+                        elif row['상태'] == "1차 승인" and i == 0: s_text = "승인 완"
+                        stamp_html += f"<div style='border: 1px solid #333; width: 70px; text-align: center; margin-left: -1px; color: black;'><div style='background: #f8f9fa; border-bottom: 1px solid #333; font-size: 10px; padding: 2px;'>{i+1}차 결재</div><div style='padding: 8px 2px; font-weight: bold; font-size: 12px;'>{name}</div><div style='border-top: 1px dotted #ccc; color: #d9534f; font-size: 9px; padding: 2px;'>{s_text}</div></div>"
+                    stamp_html += "</div>"
+                    doc_body = f"<div style='border: 2px solid #000; padding: 40px; background-color: #fff; color: #000;'><h1 style='text-align: center; text-decoration: underline;'>{row['결재유형']}</h1>{stamp_html}<table style='width: 100%; border-collapse: collapse; border: 1px solid #000;'><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2;'>기안자</td><td style='border: 1px solid #000; padding: 10px;'>{row['이름']}</td></tr><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2;'>제목</td><td style='border: 1px solid #000; padding: 10px;'>{row['제목']}</td></tr><tr><td colspan='2' style='border: 1px solid #000; padding: 30px; height: 200px; vertical-align: top;'>{row['내용'].replace('|', '<br>')}</td></tr></table></div>"
+                    st.markdown(doc_body, unsafe_allow_html=True)
+                    if st.button("📄 기안서 출력", key=f"prt_{row['결재ID']}"):
+                        clean_body = doc_body.replace("\n", "").replace("'", "\\'")
+                        components.html(f"<script>var pwin = window.open('', '_blank'); pwin.document.write('<html><body>{clean_body}</body></html>'); pwin.document.close(); setTimeout(function(){{ pwin.print(); pwin.close(); }}, 500);</script>", height=0)
+                    uid, stat = str(u['아이디']), row['상태']
+                    if (uid == approver_ids[0] and stat == "대기") or (len(approver_ids) > 1 and uid == approver_ids[1] and stat == "1차 승인"):
+                        next_stat = "1차 승인" if (uid == approver_ids[0] and len(approver_ids) > 1) else "승인"
+                        if st.button("✅ 승인하기", key=f"ok_{row['결재ID']}", type="primary"):
+                            db.worksheet("결재데이터").update_cell(actual_row, 8, next_stat)
+                            if next_stat == "승인" and "연차" in row['결재유형']:
+                                d_match = re.search(r'\d{4}-\d{2}-\d{2}', row['내용'])
+                                if d_match: db.worksheet("Schedules").append_row([str(u['사업자번호']), d_match.group(), row['이름'], f"[연차] {row['제목']}"])
+                            st.success("완료!"); st.rerun()
+        else: st.info("내역이 없습니다.")
 
-# --- 2. 페이지 설정 ---
-st.set_page_config(page_title="Didimdol HR", layout="wide")
+# --- 3. 페이지 초기화 및 디자인 ---
+st.set_page_config(page_title="Didimdol HR", page_icon="logo.png", layout="wide")
 if 'user_info' not in st.session_state: st.session_state['user_info'] = None
 
-# --- 3. 로그인 / 대시보드 ---
+logo_html = ""
+if os.path.exists("logo.png"):
+    lb = get_base64_img("logo.png")
+    logo_html = f'<div style="text-align: left;"><img src="data:image/png;base64,{lb}" width="130"></div>'
+
+# --- 4. 로그인 및 메인 로직 ---
 if st.session_state['user_info'] is None:
-    st.header("DIDIMDOL HR")
-    u_id = st.text_input("아이디")
-    u_pw = st.text_input("비밀번호", type="password")
-    if st.button("로그인"):
-        users = fetch("User_List")
-        if not users.empty:
-            match = users[(users['아이디'].astype(str) == u_id) & (users['비밀번호'].astype(str) == u_pw)]
-            if not match.empty:
-                st.session_state['user_info'] = match.iloc[0].to_dict(); st.rerun()
-            else: st.error("정보를 확인하세요.")
+    c1, col_m, c3 = st.columns([1, 1.2, 1])
+    with col_m:
+        st.markdown(logo_html if logo_html else "## DIDIMDOL HR", unsafe_allow_html=True)
+        t_l, t_j = st.tabs(["로그인", "파트너사 신청"])
+        with t_l:
+            u_id = st.text_input("아이디")
+            u_pw = st.text_input("비밀번호", type="password")
+            if st.button("로그인", type="primary", use_container_width=True):
+                users = fetch("User_List")
+                if not users.empty:
+                    match = users[(users['아이디'].astype(str) == u_id) & (users['비밀번호'].astype(str) == u_pw)]
+                    if not match.empty:
+                        st.session_state['user_info'] = match.iloc[0].to_dict(); st.rerun()
+                    else: st.error("정보를 확인하세요.")
+                else: st.error("구글 시트 연결 대기 중... 새로고침을 해주세요.")
+        with t_j:
+            with st.form("join"):
+                st.write("##### 🏢 디딤돌HR 가입")
+                j_b, j_c, j_i, j_p, j_n = st.text_input("사업자번호"), st.text_input("사업장명"), st.text_input("ID"), st.text_input("PW", type="password"), st.text_input("성함")
+                if st.form_submit_button("가입신청", use_container_width=True):
+                    get_engine().worksheet("User_List").append_row([j_b, j_c, j_i, j_p, j_n, 'Manager', '8', '스타터', '정규직', '40'])
+                    st.success("완료")
 else:
     u, db = st.session_state['user_info'], get_engine()
-    st.sidebar.write(f"**{u['이름']}**님 로그인 중")
+    st.sidebar.markdown(logo_html, unsafe_allow_html=True)
+    st.sidebar.write(f"**{u['이름']}**님 ({u['권한']})")
     menu = st.sidebar.radio("Menu", ["🏠 홈", "📝 전자결재"])
-    if st.sidebar.button("로그아웃"): st.session_state['user_info'] = None; st.rerun()
+    if st.sidebar.button("로그아웃", use_container_width=True): st.session_state['user_info'] = None; st.rerun()
+    
     if menu == "🏠 홈":
-        st.header("메인 대시보드")
+        st.header(f"반갑습니다, {u['이름']}님.")
         sch = fetch("Schedules")
         if not sch.empty:
             st.write("📅 예정된 일정")
-            st.dataframe(sch[sch['사업자번호'].astype(str) == str(u['사업자번호'])])
+            st.dataframe(sch[sch['사업자번호'].astype(str) == str(u['사업자번호'])], use_container_width=True, hide_index=True)
     else: run_approval_system(u, db)
