@@ -1,6 +1,7 @@
 streamlit
 pandas
-gspread==5.10.0
-google-auth==2.22.0
-requests==2.31.0
-urllib3==1.26.15
+gspread
+google-auth
+openpyxl
+requests
+urllib3<2.0.0
