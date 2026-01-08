@@ -3,49 +3,58 @@ import pandas as pd
 from datetime import datetime, date
 import gspread
 from google.oauth2.service_account import Credentials
-import io
 import os
 import base64
 import calendar
 import streamlit.components.v1 as components
 
-# --- 1. 데이터 엔진 (보안 및 연결 설정) ---
+# --- 1. 데이터 엔진 (에러 발생 시 즉시 중단 및 원인 출력) ---
 SPREADSHEET_ID = "15IPQ_1T5e2aGlyTuDmY_VYBZsT6bui4LYZ5bLmuyKxU"
 
 @st.cache_resource
 def get_engine():
     try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        
-        # Secrets 읽어오기 (dict로 변환하여 수정 가능하게 함)
+        # 1. Secrets 존재 확인
         if "gcp_service_account" not in st.secrets:
-            return None
+            st.error("🚨 Secrets 설정이 없습니다. Streamlit 설정을 확인하세요.")
+            st.stop()
+
+        # 2. 정보 가져오기 (dict 변환)
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # Private Key 줄바꿈 강제 보정
+        # 3. Private Key 줄바꿈 강제 처리
         if "private_key" in creds_info:
-            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-            
+            raw_key = creds_info["private_key"]
+            creds_info["private_key"] = raw_key.replace("\\n", "\n")
+
+        # 4. 구글 인증 시도
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         credentials = Credentials.from_service_account_info(creds_info, scopes=scope)
-        return gspread.authorize(credentials).open_by_key(SPREADSHEET_ID)
+        client = gspread.authorize(credentials)
+        
+        # 5. 시트 열기 시도
+        return client.open_by_key(SPREADSHEET_ID)
+
     except Exception as e:
-        return None
+        # 여기가 핵심입니다. 에러를 숨기지 않고 그대로 보여줍니다.
+        st.error(f"🚨 구글 연결 치명적 오류:\n{e}")
+        st.stop() # 프로그램 강제 중단
 
 @st.cache_data(ttl=2)
 def fetch(sheet_name): 
+    # 엔진이 없으면 아예 실행하지 않음
+    engine = get_engine()
     try:
-        engine = get_engine()
-        if engine is None: return pd.DataFrame()
-        # 시트 이름으로 데이터 호출
         data = engine.worksheet(sheet_name).get_all_values()
         if not data or len(data) < 1: return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
-        return pd.DataFrame()
+        st.error(f"🚨 시트({sheet_name}) 읽기 실패: {e}")
+        st.stop()
 
-# --- 유틸: 로고 및 시간 ---
+# --- 디자인 로직 ---
 def get_base64_img(path):
     try:
         if os.path.exists(path):
@@ -68,8 +77,7 @@ def smart_time_parser(val, current_sec=0):
 def run_approval_system(u, db):
     st.header("📝 전자결재 시스템")
     udf = fetch("User_List")
-    if udf.empty: st.warning("데이터 로딩 중..."); return
-
+    
     mgr_df = udf[(udf['사업자번호'].astype(str) == str(u['사업자번호'])) & (udf['권한'] == 'Manager')]
     mgr_map = {row['아이디']: row['이름'] for _, row in mgr_df.iterrows()}
     mgr_options = {f"{row['이름']} ({row['아이디']})": row['아이디'] for _, row in mgr_df.iterrows()}
@@ -164,20 +172,24 @@ if st.session_state['user_info'] is None:
             u_id = st.text_input("아이디", key="login_id")
             u_pw = st.text_input("비밀번호", type="password", key="login_pw")
             if st.button("로그인", type="primary", use_container_width=True):
+                # 데이터 로드 시도 (실패 시 에러 출력 후 중단)
                 users = fetch("User_List")
+                
+                # 데이터가 정상적으로 왔는지 확인
                 if not users.empty and '아이디' in users.columns:
                     match = users[(users['아이디'].astype(str) == u_id) & (users['비밀번호'].astype(str) == u_pw)]
                     if not match.empty:
                         st.session_state['user_info'] = match.iloc[0].to_dict(); st.rerun()
                     else: st.error("아이디 또는 비밀번호가 틀립니다.")
-                else: st.error("⚠️ 서버 연결 재설정 중... 10초 후 다시 로그인 버튼을 눌러주세요.")
         with t_j:
             with st.form("join"):
                 st.write("##### 🏢 디딤돌HR 가입")
                 j_b, j_c, j_i, j_p, j_n = st.text_input("사업자번호"), st.text_input("사업장명"), st.text_input("ID"), st.text_input("PW", type="password"), st.text_input("성함")
                 if st.form_submit_button("가입신청", use_container_width=True):
-                    get_engine().worksheet("User_List").append_row([j_b, j_c, j_i, j_p, j_n, 'Manager', '8', '스타터', '정규직', '40'])
-                    st.success("가입 완료")
+                    # 엔진 직접 호출하여 에러 체크
+                    engine = get_engine()
+                    engine.worksheet("User_List").append_row([j_b, j_c, j_i, j_p, j_n, 'Manager', '8', '스타터', '정규직', '40'])
+                    st.success("가입 신청이 완료되었습니다.")
 else:
     u = st.session_state['user_info']
     db = get_engine()
