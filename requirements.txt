@@ -3,3 +3,5 @@ pandas
 gspread
 google-auth
 openpyxl
+requests
+urllib3<2.0.0
