@@ -11,26 +11,34 @@ import re
 import streamlit.components.v1 as components
 
 # --- 1. 데이터 엔진 ---
+# 사용자님의 구글 시트 ID와 정확히 일치해야 합니다.
 SPREADSHEET_ID = "15IPQ_1T5e2aGlyTuDmY_VYBZsT6bui4LYZ5bLmuyKxU"
 
 @st.cache_resource
 def get_engine():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds_info = st.secrets["gcp_service_account"]
-    creds = ServiceAccountCredentials.from_json_key_dict(creds_info, scope)
-    return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds_info = st.secrets["gcp_service_account"]
+        # ★ 수정됨: from_json_key_dict -> from_json_keyfile_dict (오타 수정 완료)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+        return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
+    except Exception as e:
+        st.error(f"구글 시트 엔진 로드 실패: {e}")
+        return None
 
 @st.cache_data(ttl=2)
 def fetch(sheet_name): 
     try:
-        # 숫자가 아니라 'User_List' 같은 이름을 직접 찾습니다.
-        data = get_engine().worksheet(sheet_name).get_all_values()
+        engine = get_engine()
+        if engine is None: return pd.DataFrame()
+        # 시트 이름으로 정확하게 데이터를 가져옵니다.
+        data = engine.worksheet(sheet_name).get_all_values()
         if not data or len(data) < 1: return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
-        # 이 부분을 수정했습니다. 이제 화면에 빨간색으로 진짜 이유가 뜰 겁니다.
+        # 에러 발생 시 화면에 표시하여 원인 파악을 돕습니다.
         st.error(f"구글 시트 연결 실패 ({sheet_name}): {e}")
         return pd.DataFrame()
 
@@ -53,9 +61,8 @@ def smart_time_parser(val, current_sec):
 def run_approval_system(u, db):
     st.header("📝 전자결재 시스템")
     
-    udf = fetch("User_List") # 수정됨
-    if udf.empty: 
-        st.error("데이터를 불러올 수 없습니다. 시트 공유 설정을 확인하세요."); return
+    udf = fetch("User_List") # 숫자가 아닌 이름으로 변경
+    if udf.empty: return
 
     mgr_df = udf[(udf['사업자번호'].astype(str) == str(u['사업자번호'])) & (udf['권한'] == 'Manager')]
     mgr_map = {row['아이디']: row['이름'] for _, row in mgr_df.iterrows()}
@@ -70,7 +77,7 @@ def run_approval_system(u, db):
         with st.form("formal_approval_form"):
             st.write("📂 **결재 경로 설정 (순차 승인)**")
             c1, c2 = st.columns(2)
-            app1 = c1.selectbox("1차 결재자 (필수)", options=list(mgr_options.keys()) if mgr_options else ["선택가능한 관리자 없음"])
+            app1 = c1.selectbox("1차 결재자 (필수)", options=list(mgr_options.keys()) if mgr_options else ["관리자 없음"])
             app2 = c2.selectbox("2차 결재자 (선택)", options=["없음"] + list(mgr_options.keys()) if mgr_options else ["없음"])
             
             st.divider()
@@ -89,7 +96,7 @@ def run_approval_system(u, db):
                 if app2 != "없음": approvers.append(mgr_options[app2])
                 
                 try:
-                    sheet4 = db.worksheet("결재데이터") # 수정됨
+                    sheet4 = db.worksheet("결재데이터")
                     new_row = [
                         f"APP-{datetime.now().strftime('%Y%m%d%H%M%S')}", 
                         str(u['사업자번호']), u['아이디'], u['이름'],
@@ -104,7 +111,7 @@ def run_approval_system(u, db):
     with t2:
         st.subheader("결재 내역 모니터링")
         try:
-            df = fetch("결재데이터") # 수정됨
+            df = fetch("결재데이터")
             if not df.empty:
                 my_biz = df[df['사업자번호'].astype(str) == str(u['사업자번호'])]
                 display_df = my_biz[(my_biz['기안자ID'] == str(u['아이디'])) | (my_biz['결재자ID'].str.contains(str(u['아이디'])))]
@@ -207,7 +214,7 @@ if st.session_state['user_info'] is None:
             u_id = st.text_input("아이디", key="l_id")
             u_pw = st.text_input("비밀번호", type="password", key="l_pw")
             if st.button("로그인", use_container_width=True, type="primary"):
-                users = fetch("User_List") # 수정됨
+                users = fetch("User_List")
                 if not users.empty and '아이디' in users.columns:
                     match = users[(users['아이디'].astype(str) == u_id) & (users['비밀번호'].astype(str) == u_pw)]
                     if not match.empty:
@@ -232,7 +239,7 @@ else:
     st.sidebar.write(f"**{u['이름']}**님 ({u['권한']})")
     
     st.sidebar.divider()
-    recs = fetch("Attendance_Records") # 수정됨
+    recs = fetch("Attendance_Records")
     today_dt = date.today()
     
     it, ot = "--:--", "--:--"
@@ -253,7 +260,7 @@ else:
 
     if "홈" in menu:
         st.header(f"반갑습니다, {u['이름']}님.")
-        sch = fetch("Schedules") # 수정됨
+        sch = fetch("Schedules")
         cal = calendar.monthcalendar(today_dt.year, today_dt.month)
         cols_h = st.columns(7)
         for i, d in enumerate(["월","화","수","목","금","토","일"]):
@@ -278,7 +285,7 @@ else:
 
     elif menu == "📊 근무 관리":
         st.header("📊 전사 월간 근태 모니터링")
-        udf = fetch("User_List") # 수정됨
+        udf = fetch("User_List")
         staffs = udf[udf['사업자번호'].astype(str) == str(u['사업자번호'])]
         cal_obj = calendar.monthcalendar(today_dt.year, today_dt.month)
         cols_h = st.columns(7)
@@ -312,7 +319,7 @@ else:
 
     elif menu == "👥 직원 관리":
         st.header("👥 직원 정보 관리")
-        ms = fetch("User_List") # 수정됨
+        ms = fetch("User_List")
         ms = ms[ms['사업자번호'].astype(str) == str(u['사업자번호'])]
         if not ms.empty:
             st.dataframe(ms[['이름', '아이디', '권한']], use_container_width=True, hide_index=True)
@@ -332,4 +339,3 @@ else:
         if not recs.empty:
             my_all = recs[(recs['아이디'].astype(str) == str(u['아이디']))]
             st.dataframe(my_all[['일시', '구분', '비고']], use_container_width=True, hide_index=True)
-
