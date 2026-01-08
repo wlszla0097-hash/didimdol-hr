@@ -23,13 +23,15 @@ def get_engine():
 @st.cache_data(ttl=2)
 def fetch(sheet_name): 
     try:
-        # 숫자가 아니라 실제 시트 이름을 사용합니다.
+        # 숫자가 아니라 'User_List' 같은 이름을 직접 찾습니다.
         data = get_engine().worksheet(sheet_name).get_all_values()
         if not data or len(data) < 1: return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
+        # 이 부분을 수정했습니다. 이제 화면에 빨간색으로 진짜 이유가 뜰 겁니다.
+        st.error(f"구글 시트 연결 실패 ({sheet_name}): {e}")
         return pd.DataFrame()
 
 def smart_time_parser(val, current_sec):
@@ -330,3 +332,4 @@ else:
         if not recs.empty:
             my_all = recs[(recs['아이디'].astype(str) == str(u['아이디']))]
             st.dataframe(my_all[['일시', '구분', '비고']], use_container_width=True, hide_index=True)
+
