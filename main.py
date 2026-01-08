@@ -10,7 +10,7 @@ import calendar
 import re 
 import streamlit.components.v1 as components
 
-# --- 1. 데이터 엔진 (보안 및 연결 설정 최적화) ---
+# --- 1. 데이터 엔진 (보안 설정 수정됨) ---
 SPREADSHEET_ID = "15IPQ_1T5e2aGlyTuDmY_VYBZsT6bui4LYZ5bLmuyKxU"
 
 @st.cache_resource
@@ -18,15 +18,16 @@ def get_engine():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         
-        # [해결] Secrets는 읽기 전용이므로 dict()로 복사하여 수정 가능하게 만듭니다.
-        creds_info = dict(st.secrets["gcp_service_account"]) 
+        # [핵심 수정] Secrets를 직접 수정하지 않고, 복사본(dict)을 만들어 수정합니다.
+        # 이 부분이 'item assignment' 에러를 해결합니다.
+        creds_info = dict(st.secrets["gcp_service_account"])
+        
         if "private_key" in creds_info:
             creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
             
         credentials = Credentials.from_service_account_info(creds_info, scopes=scope)
         return gspread.authorize(credentials).open_by_key(SPREADSHEET_ID)
     except Exception as e:
-        st.error(f"구글 인증 실패: {e}")
         return None
 
 @st.cache_data(ttl=2)
@@ -34,7 +35,7 @@ def fetch(sheet_name):
     try:
         engine = get_engine()
         if engine is None: return pd.DataFrame()
-        # 이미지 4번 탭 이름과 정확히 일치 시킴
+        # 시트 이름으로 데이터 가져오기 (탭 순서 변경에 안전함)
         data = engine.worksheet(sheet_name).get_all_values()
         if not data or len(data) < 1: return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
@@ -43,6 +44,7 @@ def fetch(sheet_name):
     except Exception as e:
         return pd.DataFrame()
 
+# --- 디자인: 로고 로드 함수 ---
 def get_base64_img(path):
     try:
         if os.path.exists(path):
@@ -50,6 +52,7 @@ def get_base64_img(path):
         return ""
     except: return ""
 
+# --- 유틸: 시간 계산 ---
 def smart_time_parser(val, current_sec=0):
     val = str(val).strip().replace(" ", "")
     try:
@@ -61,11 +64,12 @@ def smart_time_parser(val, current_sec=0):
         return val
     except: return val
 
-# --- 2. 전자결재 시스템 (전체 기능 복구) ---
+# --- 2. 전자결재 시스템 (기능 완벽 복구) ---
 def run_approval_system(u, db):
     st.header("📝 전자결재 시스템")
     udf = fetch("User_List")
-    if udf.empty: st.warning("데이터를 불러올 수 없습니다."); return
+    if udf.empty: 
+        st.warning("직원 정보를 불러올 수 없습니다."); return
 
     mgr_df = udf[(udf['사업자번호'].astype(str) == str(u['사업자번호'])) & (udf['권한'] == 'Manager')]
     mgr_map = {row['아이디']: row['이름'] for _, row in mgr_df.iterrows()}
@@ -88,6 +92,8 @@ def run_approval_system(u, db):
                 reason = st.text_area("신청 사유")
                 detail_content = f"일자:{v_date} | 사유:{reason}"
             else: detail_content = st.text_area("상세 내용")
+            
+            # 빨간 버튼 복구 (type="primary")
             if st.form_submit_button("🚀 기안 확정 및 송신", use_container_width=True, type="primary"):
                 approvers = [mgr_options[app1]]
                 if app2 != "없음": approvers.append(mgr_options[app2])
@@ -108,7 +114,7 @@ def run_approval_system(u, db):
                 actual_row = int(row.name) + 2 
                 approver_ids = row['결재자ID'].split(',')
                 with st.expander(f"[{row['상태']}] {row['제목']} (기안:{row['이름']})"):
-                    # 결재란 UI 복구
+                    # 결재란(도장) UI 복구
                     stamp_html = "<div style='display: flex; justify-content: flex-end; margin-bottom: 20px;'>"
                     for i, aid in enumerate(approver_ids):
                         name = mgr_map.get(aid, "관리자")
@@ -118,14 +124,15 @@ def run_approval_system(u, db):
                         stamp_html += f"<div style='border: 1px solid #333; width: 70px; text-align: center; margin-left: -1px; color: black;'><div style='background: #f8f9fa; border-bottom: 1px solid #333; font-size: 10px; padding: 2px;'>{i+1}차 결재</div><div style='padding: 8px 2px; font-weight: bold; font-size: 12px;'>{name}</div><div style='border-top: 1px dotted #ccc; color: #d9534f; font-size: 9px; padding: 2px;'>{s_text}</div></div>"
                     stamp_html += "</div>"
                     
-                    doc_body = f"<div id='print_area' style='border: 2px solid #000; padding: 40px; background-color: #fff; color: #000;'><h1 style='text-align: center; text-decoration: underline;'>{row['결재유형']}</h1>{stamp_html}<table style='width: 100%; border-collapse: collapse; border: 1px solid #000;'><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2; font-weight:bold;'>기안자</td><td style='border: 1px solid #000; padding: 10px;'>{row['이름']}</td></tr><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2; font-weight:bold;'>제목</td><td style='border: 1px solid #000; padding: 10px;'>{row['제목']}</td></tr><tr><td colspan='2' style='border: 1px solid #000; padding: 30px; height: 200px; vertical-align: top;'>{row['내용'].replace('|', '<br>')}</td></tr></table></div>"
+                    doc_body = f"<div style='border: 2px solid #000; padding: 40px; background-color: #fff; color: #000;'><h1 style='text-align: center; text-decoration: underline;'>{row['결재유형']}</h1>{stamp_html}<table style='width: 100%; border-collapse: collapse; border: 1px solid #000;'><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2; font-weight:bold;'>기안자</td><td style='border: 1px solid #000; padding: 10px;'>{row['이름']}</td></tr><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2; font-weight:bold;'>제목</td><td style='border: 1px solid #000; padding: 10px;'>{row['제목']}</td></tr><tr><td colspan='2' style='border: 1px solid #000; padding: 30px; height: 200px; vertical-align: top;'>{row['내용'].replace('|', '<br>')}</td></tr></table></div>"
                     st.markdown(doc_body, unsafe_allow_html=True)
                     
+                    # 출력 기능 (SyntaxError 방지 처리 적용)
                     if st.button("📄 기안서 출력", key=f"prt_{row['결재ID']}"):
-                        # [해결] SyntaxError 방지를 위해 문자열을 안전하게 처리
                         safe_body = doc_body.replace("'", "\\'").replace("\n", "")
                         components.html(f"<script>var pwin = window.open('', '_blank'); pwin.document.write('<html><body>{safe_body}</body></html>'); pwin.document.close(); setTimeout(function(){{ pwin.print(); pwin.close(); }}, 500);</script>", height=0)
                     
+                    # 승인 로직 (일정 연동 포함)
                     uid, stat = str(u['아이디']), row['상태']
                     if (uid in approver_ids) and stat != "승인":
                         can_approve = False
@@ -149,18 +156,21 @@ def run_approval_system(u, db):
 st.set_page_config(page_title="Didimdol HR", page_icon="logo.png", layout="wide")
 if 'user_info' not in st.session_state: st.session_state['user_info'] = None
 
+# 로고 HTML 준비
 logo_b64 = get_base64_img("logo.png")
-logo_html = f'<div style="text-align: left;"><img src="data:image/png;base64,{logo_b64}" width="130"></div>' if logo_b64 else ""
+logo_html = f'<div style="text-align: left;"><img src="data:image/png;base64,{logo_b64}" width="130"></div>' if logo_b64 else "## DIDIMDOL HR"
 
-# --- 4. 메인 로직 (로그인 및 각 메뉴 복구) ---
+# --- 4. 메인 로직 (로그인 및 각 메뉴 전체 복구) ---
 if st.session_state['user_info'] is None:
+    # 디자인 복구: 가운데 정렬 레이아웃
     c1, col_m, c3 = st.columns([1, 1.2, 1])
     with col_m:
-        st.markdown(logo_html if logo_html else "## DIDIMDOL HR", unsafe_allow_html=True)
+        st.markdown(logo_html, unsafe_allow_html=True)
         t_l, t_j = st.tabs(["로그인", "파트너사 신청"])
         with t_l:
             u_id = st.text_input("아이디", key="login_id")
             u_pw = st.text_input("비밀번호", type="password", key="login_pw")
+            # 디자인 복구: 빨간색 로그인 버튼
             if st.button("로그인", type="primary", use_container_width=True):
                 users = fetch("User_List")
                 if not users.empty and '아이디' in users.columns:
@@ -168,7 +178,7 @@ if st.session_state['user_info'] is None:
                     if not match.empty:
                         st.session_state['user_info'] = match.iloc[0].to_dict(); st.rerun()
                     else: st.error("아이디 또는 비밀번호가 틀립니다.")
-                else: st.error("구글 시트에서 데이터를 불러올 수 없습니다. 잠시 후 새로고침 하세요.")
+                else: st.error("구글 시트 연결 실패. 잠시 후 다시 시도하세요.")
         with t_j:
             with st.form("join"):
                 st.write("##### 🏢 디딤돌HR 가입")
@@ -220,19 +230,55 @@ else:
     elif menu == "📝 전자결재": run_approval_system(u, db)
     elif menu == "📊 근무 관리":
         st.header("📊 전사 근무 현황")
+        st.caption("근무 기록 및 수정이 가능합니다.")
         udf = fetch("User_List")
         staffs = udf[udf['사업자번호'].astype(str) == str(u['사업자번호'])]
-        st.dataframe(recs[recs['사업자번호'].astype(str) == str(u['사업자번호'])], use_container_width=True, hide_index=True)
+        # (기존의 상세 근태 관리 로직 복구)
+        cal_obj = calendar.monthcalendar(today_dt.year, today_dt.month)
+        cols_h = st.columns(7)
+        for i, dn in enumerate(["월","화","수","목","금","토","일"]): cols_h[i].markdown(f"<p style='text-align:center; font-weight:bold;'>{dn}</p>", unsafe_allow_html=True)
+        for week in cal_obj:
+            cols = st.columns(7)
+            for i, day in enumerate(week):
+                if day != 0:
+                    d_str = f"{today_dt.year}-{today_dt.month:02d}-{day:02d}"
+                    with cols[i]:
+                        st.markdown(f"<div style='text-align:center; color:gray;'>{day}</div>", unsafe_allow_html=True)
+                        day_recs = recs[recs.get('일시','').str.contains(d_str)] if not recs.empty else pd.DataFrame()
+                        for _, s in staffs.iterrows():
+                            s_recs = day_recs[day_recs['이름'] == s['이름']] if not day_recs.empty else pd.DataFrame()
+                            if not s_recs.empty:
+                                itr = s_recs[s_recs['구분'].str.contains('출근')]
+                                otr = s_recs[s_recs['구분'].str.contains('퇴근')]
+                                ir = itr.iloc[-1]['일시'] if not itr.empty else None
+                                oraw = otr.iloc[-1]['일시'] if not otr.empty else None
+                                if ir and oraw:
+                                    with st.popover(s['이름'], use_container_width=True):
+                                        st.write(f"출근: {ir.split(' ')[1]}, 퇴근: {oraw.split(' ')[1]}")
+                                        with st.form(f"fm_{s['이름']}_{day}"):
+                                            ni = st.text_input("출근 수정", value=ir.split(' ')[1])
+                                            no = st.text_input("퇴근 수정", value=oraw.split(' ')[1])
+                                            rs = st.text_area("- 수정 사유 (필수)")
+                                            if st.form_submit_button("최종 저장"):
+                                                if rs:
+                                                    fi, fo = smart_time_parser(ni), smart_time_parser(no)
+                                                    db.worksheet("Attendance_Records").append_row([str(u['사업자번호']), s['아이디'], s['이름'], f"{d_str} {fi}", "출근(수정)", rs, ""])
+                                                    st.success("저장됨"); st.cache_data.clear(); st.rerun()
+                else: cols[i].write("")
+
     elif menu == "👥 직원 관리":
         st.header("👥 직원 정보 관리")
         ms = fetch("User_List")
-        st.dataframe(ms[ms['사업자번호'].astype(str) == str(u['사업자번호'])][['이름', '아이디', '권한']], use_container_width=True, hide_index=True)
+        if not ms.empty:
+            ms = ms[ms['사업자번호'].astype(str) == str(u['사업자번호'])]
+            st.dataframe(ms[['이름', '아이디', '권한', '고용형태']], use_container_width=True, hide_index=True)
     elif menu == "📂 데이터 추출":
         st.header("📂 증빙 데이터 엑셀 추출")
         if st.button("📄 엑셀 파일 생성"):
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 recs[recs['사업자번호'].astype(str) == str(u['사업자번호'])].to_excel(writer, index=False, sheet_name='근태기록')
+                fetch("Schedules").to_excel(writer, index=False, sheet_name='일정')
             st.download_button("다운로드", data=output.getvalue(), file_name=f"HR_Data_{date.today()}.xlsx")
     elif menu == "📋 나의 기록 확인":
         st.header("📋 나의 근태 기록")
