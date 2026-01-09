@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date, timedelta  # ✅ 시간 계산(timedelta) 추가 완료
+from datetime import datetime, date, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
 import os
@@ -10,7 +10,7 @@ import calendar
 import re
 import streamlit.components.v1 as components
 
-# --- 1. 데이터 엔진 (Secrets 방식 + 연결 안정화) ---
+# --- 1. 데이터 엔진 ---
 SPREADSHEET_ID = "15IPQ_1T5e2aGlyTuDmY_VYBZsT6bui4LYZ5bLmuyKxU"
 
 @st.cache_resource
@@ -110,7 +110,6 @@ def run_approval_system(u, db):
                 if app2 != "없음": approvers.append(mgr_options[app2])
                 try:
                     sheet_app = db.open_by_key(SPREADSHEET_ID).worksheet("결재데이터")
-                    # 한국 시간 적용
                     now_kst = (datetime.now() + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S")
                     new_row = [f"APP-{datetime.now().strftime('%Y%m%d%H%M%S')}", str(u['사업자번호']), u['아이디'], u['이름'], doc_type, title, detail_content, "대기", now_kst, "", ",".join(approvers)]
                     sheet_app.append_row(new_row)
@@ -155,14 +154,23 @@ def run_approval_system(u, db):
                         
                         if can_approve:
                             if st.button("✅ 승인 완료하기", key=f"ok_{row['결재ID']}", type="primary", use_container_width=True):
+                                # 1. 결재 데이터 업데이트
                                 db.open_by_key(SPREADSHEET_ID).worksheet("결재데이터").update_cell(actual_row, 8, next_stat)
-                                # 한국 시간 적용
                                 now_kst = (datetime.now() + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S")
                                 db.open_by_key(SPREADSHEET_ID).worksheet("결재데이터").update_cell(actual_row, 10, now_kst)
                                 
+                                # 2. 일정 연동 (연차인 경우 Schedules 시트에 추가)
                                 if next_stat == "승인" and "연차" in row['결재유형']:
-                                    d_match = re.search(r'\d{4}-\d{2}-\d{2}', row['내용'])
-                                    if d_match: db.open_by_key(SPREADSHEET_ID).worksheet("Schedules").append_row([str(u['사업자번호']), d_match.group(), row['이름'], f"[연차] {row['제목']}"])
+                                    try:
+                                        d_match = re.search(r'\d{4}-\d{2}-\d{2}', row['내용'])
+                                        if d_match:
+                                            # Schedules 시트 존재 여부 확인
+                                            sheet_sch = db.open_by_key(SPREADSHEET_ID).worksheet("Schedules")
+                                            sheet_sch.append_row([str(u['사업자번호']), d_match.group(), row['이름'], f"[연차] {row['제목']}"])
+                                            st.toast("📅 일정이 홈 캘린더에 공유되었습니다!")
+                                    except Exception as e:
+                                        st.error(f"⚠️ 승인은 되었으나 일정 공유 실패 (Schedules 시트 확인 필요): {e}")
+
                                 st.success("승인 완료."); st.cache_data.clear(); st.rerun()
         else: st.info("내역이 없습니다.")
 
@@ -231,7 +239,6 @@ else:
     st.sidebar.write(f"🕒 출근: **{it}**")
     st.sidebar.write(f"🕒 퇴근: **{ot}**")
     
-    # ✅ [수정 완료] 버튼 로직: 한국 시간 +9시간 적용
     if not has_in:
         if st.sidebar.button("출근하기", type="primary", use_container_width=True):
             now_kst = datetime.now() + timedelta(hours=9)
@@ -251,6 +258,7 @@ else:
     
     if "홈" in menu:
         st.header(f"반갑습니다, {u['이름']}님.")
+        # [수정] 일정 데이터 가져오기 및 날짜 비교 로직 강화
         sch = fetch("Schedules")
         cal = calendar.monthcalendar(today_dt.year, today_dt.month)
         cols_h = st.columns(7)
@@ -264,9 +272,15 @@ else:
                         bg = "#e7f3ff" if curr_date == d_str else "transparent"
                         st.markdown(f"<div style='text-align:center; background-color:{bg}; border:1px solid #eee;'><b>{day}</b></div>", unsafe_allow_html=True)
                         if not sch.empty:
-                            ds = sch[(sch.get('사업자번호','').astype(str) == str(u['사업자번호'])) & (sch.get('날짜','') == curr_date)]
-                            for _, row in ds.iterrows():
-                                with st.popover(row['이름'], use_container_width=True): st.write(f"📌 {row['내용']}")
+                            # 2026-1-10 과 2026-01-10 비교를 위해 replace로 단순화
+                            my_sch = sch[(sch.get('사업자번호','').astype(str) == str(u['사업자번호']))]
+                            if not my_sch.empty:
+                                for _, row in my_sch.iterrows():
+                                    # DB 날짜와 달력 날짜를 둘 다 정제해서 비교
+                                    db_date = str(row.get('날짜','')).strip().replace('-0', '-')
+                                    cal_date = curr_date.replace('-0', '-')
+                                    if db_date == cal_date:
+                                        with st.popover(row['이름'], use_container_width=True): st.write(f"📌 {row['내용']}")
                 else: cols[i].write("")
                 
     elif menu == "📝 전자결재": run_approval_system(u, db)
