@@ -1,11 +1,15 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
+import calendar      # ✅ 추가
+import re            # ✅ 추가
 import gspread
 from google.oauth2.service_account import Credentials
 import os
 import base64
+import io
 import streamlit.components.v1 as components
+
 
 # --- 1. 데이터 엔진 (에러 원문 출력 모드) ---
 SPREADSHEET_ID = "15IPQ_1T5e2aGlyTuDmY_VYBZsT6bui4LYZ5bLmuyKxU"
@@ -297,3 +301,4 @@ else:
         if not recs.empty:
             my_all = recs[recs['아이디'].astype(str) == str(u['아이디'])]
             st.dataframe(my_all[['일시', '구분', '비고']], use_container_width=True, hide_index=True)
+
