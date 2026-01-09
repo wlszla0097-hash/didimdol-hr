@@ -1,40 +1,34 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta  # ✅ 시간 계산(timedelta) 추가 완료
 import gspread
 from google.oauth2.service_account import Credentials
 import os
 import base64
 import io
-import calendar  # ✅ 고객님 요청대로 추가
-import re        # ✅ 고객님 요청대로 추가
+import calendar
+import re
 import streamlit.components.v1 as components
 
-# --- 1. 데이터 엔진 (고객님이 해결하신 Secrets 방식 적용) ---
+# --- 1. 데이터 엔진 (Secrets 방식 + 연결 안정화) ---
 SPREADSHEET_ID = "15IPQ_1T5e2aGlyTuDmY_VYBZsT6bui4LYZ5bLmuyKxU"
 
 @st.cache_resource
 def get_engine():
     try:
-        # Secrets 확인
         if "gcp_service_account" not in st.secrets:
             st.error("🚨 Secrets 설정이 비어있습니다.")
             return None
 
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        
-        # [핵심] Secrets 객체를 dict로 변환 (수정 가능하도록)
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # [핵심] Private Key 줄바꿈 강제 보정
         if "private_key" in creds_info:
             creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
             
         credentials = Credentials.from_service_account_info(creds_info, scopes=scope)
         client = gspread.authorize(credentials)
-        
-        # 연결 테스트
-        client.open_by_key(SPREADSHEET_ID)
+        client.open_by_key(SPREADSHEET_ID) # 연결 테스트
         return client
 
     except Exception as e:
@@ -46,7 +40,6 @@ def fetch(sheet_name):
     engine = get_engine()
     if engine is None: return pd.DataFrame()
     try:
-        # 시트 이름이 숫자인 경우와 문자인 경우 모두 대응
         if isinstance(sheet_name, int):
             ws = engine.open_by_key(SPREADSHEET_ID).get_worksheet(sheet_name)
         else:
@@ -60,11 +53,11 @@ def fetch(sheet_name):
     except Exception as e:
         return pd.DataFrame()
 
-# --- 유틸: 시간 계산 (정교한 버전 복구) ---
+# --- 유틸: 시간 계산 ---
 def smart_time_parser(val, current_sec=0):
     val = str(val).strip().replace(" ", "")
     try:
-        if "." in val: # 소수점 시간 대응
+        if "." in val:
             f_v = float(val); h, m = int(f_v), int((f_v - int(f_v)) * 60)
             return f"{h:02d}:{m:02d}:{current_sec:02d}"
         if ":" in val:
@@ -84,7 +77,7 @@ def get_base64_img(path):
         return ""
     except: return ""
 
-# --- 2. 전자결재 시스템 (기능/디자인 완전 복구) ---
+# --- 2. 전자결재 시스템 ---
 def run_approval_system(u, db):
     st.header("📝 전자결재 시스템")
     udf = fetch("User_List")
@@ -117,7 +110,9 @@ def run_approval_system(u, db):
                 if app2 != "없음": approvers.append(mgr_options[app2])
                 try:
                     sheet_app = db.open_by_key(SPREADSHEET_ID).worksheet("결재데이터")
-                    new_row = [f"APP-{datetime.now().strftime('%Y%m%d%H%M%S')}", str(u['사업자번호']), u['아이디'], u['이름'], doc_type, title, detail_content, "대기", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "", ",".join(approvers)]
+                    # 한국 시간 적용
+                    now_kst = (datetime.now() + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S")
+                    new_row = [f"APP-{datetime.now().strftime('%Y%m%d%H%M%S')}", str(u['사업자번호']), u['아이디'], u['이름'], doc_type, title, detail_content, "대기", now_kst, "", ",".join(approvers)]
                     sheet_app.append_row(new_row)
                     st.success("기안서가 송신되었습니다."); st.cache_data.clear()
                 except Exception as e: st.error(f"저장 오류: {e}")
@@ -132,7 +127,6 @@ def run_approval_system(u, db):
                 actual_row = int(row.name) + 2 
                 approver_ids = row['결재자ID'].split(',')
                 with st.expander(f"[{row['상태']}] {row['제목']} (기안:{row['이름']})"):
-                    # [UI 복구] 도장 및 문서 디자인
                     stamp_html = "<div style='display: flex; justify-content: flex-end; margin-bottom: 20px;'>"
                     for i, aid in enumerate(approver_ids):
                         name = mgr_map.get(aid, "관리자")
@@ -145,7 +139,6 @@ def run_approval_system(u, db):
                     doc_body = f"<div style='border: 2px solid #000; padding: 40px; background-color: #fff; color: #000;'><h1 style='text-align: center; text-decoration: underline;'>{row['결재유형']}</h1>{stamp_html}<table style='width: 100%; border-collapse: collapse; border: 1px solid #000;'><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2; font-weight:bold;'>기안자</td><td style='border: 1px solid #000; padding: 10px;'>{row['이름']}</td></tr><tr><td style='border: 1px solid #000; padding: 10px; background: #f2f2f2; font-weight:bold;'>제목</td><td style='border: 1px solid #000; padding: 10px;'>{row['제목']}</td></tr><tr><td colspan='2' style='border: 1px solid #000; padding: 30px; height: 200px; vertical-align: top;'>{row['내용'].replace('|', '<br>')}</td></tr></table></div>"
                     st.markdown(doc_body, unsafe_allow_html=True)
                     
-                    # [기능 복구] 출력 버튼
                     if st.button("📄 기안서 출력", key=f"prt_{row['결재ID']}"):
                         safe_body = doc_body.replace("'", "\\'").replace("\n", "")
                         components.html(f"<script>var pwin = window.open('', '_blank'); pwin.document.write('<html><body>{safe_body}</body></html>'); pwin.document.close(); setTimeout(function(){{ pwin.print(); pwin.close(); }}, 500);</script>", height=0)
@@ -163,6 +156,10 @@ def run_approval_system(u, db):
                         if can_approve:
                             if st.button("✅ 승인 완료하기", key=f"ok_{row['결재ID']}", type="primary", use_container_width=True):
                                 db.open_by_key(SPREADSHEET_ID).worksheet("결재데이터").update_cell(actual_row, 8, next_stat)
+                                # 한국 시간 적용
+                                now_kst = (datetime.now() + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S")
+                                db.open_by_key(SPREADSHEET_ID).worksheet("결재데이터").update_cell(actual_row, 10, now_kst)
+                                
                                 if next_stat == "승인" and "연차" in row['결재유형']:
                                     d_match = re.search(r'\d{4}-\d{2}-\d{2}', row['내용'])
                                     if d_match: db.open_by_key(SPREADSHEET_ID).worksheet("Schedules").append_row([str(u['사업자번호']), d_match.group(), row['이름'], f"[연차] {row['제목']}"])
@@ -212,7 +209,6 @@ else:
     
     st.sidebar.divider()
     
-    # [기능 복구] 사이드바 출퇴근 버튼 기능
     recs = fetch("Attendance_Records")
     today_dt = date.today()
     d_str = today_dt.strftime("%Y-%m-%d")
@@ -235,15 +231,17 @@ else:
     st.sidebar.write(f"🕒 출근: **{it}**")
     st.sidebar.write(f"🕒 퇴근: **{ot}**")
     
-    # 버튼 로직: 출근 안했으면 '출근하기', 출근 했는데 퇴근 안했으면 '퇴근하기'
+    # ✅ [수정 완료] 버튼 로직: 한국 시간 +9시간 적용
     if not has_in:
         if st.sidebar.button("출근하기", type="primary", use_container_width=True):
-            now_t = datetime.now().strftime("%H:%M:%S")
+            now_kst = datetime.now() + timedelta(hours=9)
+            now_t = now_kst.strftime("%H:%M:%S")
             db.open_by_key(SPREADSHEET_ID).worksheet("Attendance_Records").append_row([str(u['사업자번호']), u['아이디'], u['이름'], f"{d_str} {now_t}", "출근", "", ""])
             st.rerun()
     elif not has_out:
         if st.sidebar.button("퇴근하기", type="primary", use_container_width=True):
-            now_t = datetime.now().strftime("%H:%M:%S")
+            now_kst = datetime.now() + timedelta(hours=9)
+            now_t = now_kst.strftime("%H:%M:%S")
             db.open_by_key(SPREADSHEET_ID).worksheet("Attendance_Records").append_row([str(u['사업자번호']), u['아이디'], u['이름'], f"{d_str} {now_t}", "퇴근", "", ""])
             st.rerun()
     
@@ -316,7 +314,6 @@ else:
             ms = ms[ms['사업자번호'].astype(str) == str(u['사업자번호'])]
             st.dataframe(ms[['이름', '아이디', '권한', '고용형태']], use_container_width=True, hide_index=True)
             
-            # [기능 복구] 직원 수정 기능
             st.divider()
             st.subheader("🔧 직원 정보 수정")
             target_name = st.selectbox("수정할 직원 선택", ["선택"] + ms['이름'].tolist())
@@ -328,11 +325,10 @@ else:
                     new_type = c2.selectbox("고용형태", ["정규직", "계약직", "아르바이트"], index=["정규직", "계약직", "아르바이트"].index(target_row.get('고용형태', '정규직')))
                     if st.form_submit_button("정보 업데이트"):
                         try:
-                            # gspread로 셀 찾아서 업데이트 (이름 기준)
                             ws = db.open_by_key(SPREADSHEET_ID).worksheet("User_List")
                             cell = ws.find(target_name)
-                            ws.update_cell(cell.row, 6, new_pos) # 권한 컬럼 가정
-                            ws.update_cell(cell.row, 9, new_type) # 고용형태 컬럼 가정
+                            ws.update_cell(cell.row, 6, new_pos)
+                            ws.update_cell(cell.row, 9, new_type)
                             st.success("수정 완료"); st.cache_data.clear(); st.rerun()
                         except Exception as e: st.error(f"수정 실패: {e}")
 
