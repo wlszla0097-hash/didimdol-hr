@@ -76,7 +76,7 @@ except Exception as e:
 
 # --- 디자인 로직 ---
 def get_base64_img(path):
-@@ -77,7 +80,8 @@ def smart_time_parser(val, current_sec=0):
+@@ -77,7 +80,8 @@
 def run_approval_system(u, db):
 st.header("📝 전자결재 시스템")
 udf = fetch("User_List")
@@ -86,7 +86,7 @@ udf = fetch("User_List")
 mgr_df = udf[(udf['사업자번호'].astype(str) == str(u['사업자번호'])) & (udf['권한'] == 'Manager')]
 mgr_map = {row['아이디']: row['이름'] for _, row in mgr_df.iterrows()}
 mgr_options = {f"{row['이름']} ({row['아이디']})": row['아이디'] for _, row in mgr_df.iterrows()}
-@@ -104,7 +108,7 @@ def run_approval_system(u, db):
+@@ -104,7 +108,7 @@
 approvers = [mgr_options[app1]]
 if app2 != "없음": approvers.append(mgr_options[app2])
 try:
@@ -95,7 +95,7 @@ try:
 new_row = [f"APP-{datetime.now().strftime('%Y%m%d%H%M%S')}", str(u['사업자번호']), u['아이디'], u['이름'], doc_type, title, detail_content, "대기", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "", ",".join(approvers)]
 sheet_app.append_row(new_row)
 st.success("기안서가 송신되었습니다."); st.cache_data.clear()
-@@ -148,10 +152,10 @@ def run_approval_system(u, db):
+@@ -148,10 +152,10 @@
 
 if can_approve:
 if st.button("✅ 승인 완료하기", key=f"ok_{row['결재ID']}", type="primary", use_container_width=True):
@@ -108,7 +108,7 @@ d_match = re.search(r'\d{4}-\d{2}-\d{2}', row['내용'])
 st.success("승인 완료."); st.cache_data.clear(); st.rerun()
 else: st.info("내역이 없습니다.")
 
-@@ -172,27 +176,33 @@ def run_approval_system(u, db):
+@@ -172,27 +176,33 @@
 u_id = st.text_input("아이디", key="login_id")
 u_pw = st.text_input("비밀번호", type="password", key="login_pw")
 if st.button("로그인", type="primary", use_container_width=True):
@@ -155,7 +155,7 @@ u = st.session_state['user_info']
 st.sidebar.markdown(logo_html, unsafe_allow_html=True)
 st.sidebar.write(f"**{u.get('사업장명','')}**")
 st.sidebar.write(f"**{u['이름']}**님 ({u['권한']})")
-@@ -264,7 +274,7 @@ def run_approval_system(u, db):
+@@ -264,26 +274,26 @@
 if st.form_submit_button("최종 저장"):
 if rs:
 fi, fo = smart_time_parser(ni), smart_time_parser(no)
@@ -163,3 +163,23 @@ fi, fo = smart_time_parser(ni), smart_time_parser(no)
                                                     db.open_by_key(SPREADSHEET_ID).worksheet("Attendance_Records").append_row([str(u['사업자번호']), s['아이디'], s['이름'], f"{d_str} {fi}", "출근(수정)", rs, ""])
 st.success("저장됨"); st.cache_data.clear(); st.rerun()
 else: cols[i].write("")
+
+elif menu == "👥 직원 관리":
+st.header("👥 직원 정보 관리")
+ms = fetch("User_List")
+if not ms.empty:
+ms = ms[ms['사업자번호'].astype(str) == str(u['사업자번호'])]
+st.dataframe(ms[['이름', '아이디', '권한', '고용형태']], use_container_width=True, hide_index=True)
+elif menu == "📂 데이터 추출":
+st.header("📂 증빙 데이터 엑셀 추출")
+if st.button("📄 엑셀 파일 생성"):
+output = io.BytesIO()
+with pd.ExcelWriter(output, engine='openpyxl') as writer:
+recs[recs['사업자번호'].astype(str) == str(u['사업자번호'])].to_excel(writer, index=False, sheet_name='근태기록')
+fetch("Schedules").to_excel(writer, index=False, sheet_name='일정')
+st.download_button("다운로드", data=output.getvalue(), file_name=f"HR_Data_{date.today()}.xlsx")
+elif menu == "📋 나의 기록 확인":
+st.header("📋 나의 근태 기록")
+if not recs.empty:
+my_all = recs[recs['아이디'].astype(str) == str(u['아이디'])]
+st.dataframe(my_all[['일시', '구분', '비고']], use_container_width=True, hide_index=True)
